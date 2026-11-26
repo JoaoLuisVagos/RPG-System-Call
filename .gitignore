@@ -1,0 +1,4 @@
+backend/**/bin/
+backend/**/obj/
+backend/**/data/
+.DS_Store
