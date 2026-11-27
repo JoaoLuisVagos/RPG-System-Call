@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.SignalR;
+
 namespace RpgTabletop.Api.Endpoints;
 
 public static class CampaignEndpoints
@@ -8,7 +10,10 @@ public static class CampaignEndpoints
         return endpoints;
     }
 
-    private static async Task<IResult> UpdateCampaignAsync(CampaignRequest request, GameStore store)
+    private static async Task<IResult> UpdateCampaignAsync(
+        CampaignRequest request,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
         {
@@ -22,6 +27,7 @@ public static class CampaignEndpoints
         }
 
         await store.UpdateAsync(state => state.CampaignName = name);
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.NoContent();
     }
 }
