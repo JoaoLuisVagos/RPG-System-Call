@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.SignalR;
+
 namespace RpgTabletop.Api.Endpoints;
 
 public static class MapEndpoints
@@ -5,12 +7,16 @@ public static class MapEndpoints
     public static IEndpointRouteBuilder MapMapEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPut("/api/maps/{id}/active", SetActiveMapAsync);
+        endpoints.MapPut("/api/maps/{id}/fog", UpdateFogAsync);
         endpoints.MapPost("/api/maps", CreateMapAsync);
         endpoints.MapDelete("/api/maps/{id}", DeleteMapAsync);
         return endpoints;
     }
 
-    private static async Task<IResult> SetActiveMapAsync(string id, GameStore store)
+    private static async Task<IResult> SetActiveMapAsync(
+        string id,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         var state = await store.ReadAsync();
         if (state.Maps.All(map => map.Id != id))
@@ -19,10 +25,49 @@ public static class MapEndpoints
         }
 
         await store.UpdateAsync(current => current.ActiveMapId = id);
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.NoContent();
     }
 
-    private static async Task<IResult> CreateMapAsync(CreateMapRequest request, GameStore store)
+    private static async Task<IResult> UpdateFogAsync(
+        string id,
+        UpdateFogRequest request,
+        GameStore store,
+        IHubContext<SessionHub> hub)
+    {
+        if (request.RevealedCells is null ||
+            request.RevealedCells.Count > 400 ||
+            request.RevealedCells.Any(cell => cell is < 0 or >= 400))
+        {
+            return Results.BadRequest(new { message = "As áreas reveladas do mapa são inválidas." });
+        }
+
+        var state = await store.UpdateAsync(current =>
+        {
+            var map = current.Maps.FirstOrDefault(item => item.Id == id);
+            if (map is null)
+            {
+                return;
+            }
+
+            map.FogEnabled = request.Enabled;
+            map.RevealedCells = request.RevealedCells.Distinct().ToList();
+        });
+
+        var updatedMap = state.Maps.FirstOrDefault(item => item.Id == id);
+        if (updatedMap is null)
+        {
+            return Results.NotFound();
+        }
+
+        await RealtimeEvents.PublishTableChangedAsync(hub);
+        return Results.Ok(updatedMap);
+    }
+
+    private static async Task<IResult> CreateMapAsync(
+        CreateMapRequest request,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
         {
@@ -49,10 +94,14 @@ public static class MapEndpoints
             state.ActiveMapId = map.Id;
         });
 
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.Created($"/api/maps/{map.Id}", map);
     }
 
-    private static async Task<IResult> DeleteMapAsync(string id, GameStore store)
+    private static async Task<IResult> DeleteMapAsync(
+        string id,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         var existingState = await store.ReadAsync();
         if (existingState.Maps.All(map => map.Id != id))
@@ -70,6 +119,7 @@ public static class MapEndpoints
             }
         });
 
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.NoContent();
     }
 }

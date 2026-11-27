@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.SignalR;
+
 namespace RpgTabletop.Api.Endpoints;
 
 public static class CharacterEndpoints
@@ -10,7 +12,10 @@ public static class CharacterEndpoints
         return endpoints;
     }
 
-    private static async Task<IResult> CreateCharacterAsync(GameCharacter character, GameStore store)
+    private static async Task<IResult> CreateCharacterAsync(
+        GameCharacter character,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         var validation = CharacterValidator.Validate(character);
         if (validation is not null)
@@ -35,13 +40,15 @@ public static class CharacterEndpoints
             }
         });
 
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.Created($"/api/characters/{character.Id}", state.Characters.Last());
     }
 
     private static async Task<IResult> UpdateCharacterAsync(
         string id,
         GameCharacter character,
-        GameStore store)
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         var validation = CharacterValidator.Validate(character);
         if (validation is not null)
@@ -71,10 +78,14 @@ public static class CharacterEndpoints
             return Results.NotFound();
         }
 
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.Ok(savedCharacter);
     }
 
-    private static async Task<IResult> DeleteCharacterAsync(string id, GameStore store)
+    private static async Task<IResult> DeleteCharacterAsync(
+        string id,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         var existingState = await store.ReadAsync();
         if (existingState.Characters.All(character => character.Id != id))
@@ -86,8 +97,22 @@ public static class CharacterEndpoints
         {
             current.Characters.RemoveAll(character => character.Id == id);
             current.Tokens.RemoveAll(token => token.CharacterId == id);
+            var removedTurn = current.Initiative.FindIndex(entry => entry.CharacterId == id);
+            current.Initiative.RemoveAll(entry => entry.CharacterId == id);
+            if (current.Initiative.Count == 0)
+            {
+                current.InitiativeTurn = 0;
+                current.InitiativeRound = 1;
+            }
+            else if (removedTurn >= 0)
+            {
+                current.InitiativeTurn = removedTurn < current.InitiativeTurn
+                    ? current.InitiativeTurn - 1
+                    : Math.Min(current.InitiativeTurn, current.Initiative.Count - 1);
+            }
         });
 
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.NoContent();
     }
 }

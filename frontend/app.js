@@ -1,5 +1,21 @@
-const API_URL = "http://localhost:5080/api";
-const state = { data: null, sides: 20, zoomed: false, initiative: [], toastTimer: null };
+import { HubConnectionBuilder } from "@microsoft/signalr";
+import "./styles.css";
+
+const API_URL = "/api";
+const state = {
+  data: null,
+  sides: 20,
+  advantage: false,
+  zoomed: false,
+  fogEditing: false,
+  fogPointerDown: false,
+  fogReveal: true,
+  diceBox: null,
+  connection: null,
+  toastTimer: null
+};
+const FOG_COLUMNS = 20;
+const FOG_ROWS = 20;
 const $ = selector => document.querySelector(selector);
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -44,6 +60,7 @@ function render() {
   renderPlayers();
   renderSheets();
   renderInitiative();
+  renderChat();
 }
 
 function renderCampaign() {
@@ -94,12 +111,37 @@ function renderBoard() {
   }
   $("#board-empty").hidden = Boolean(map);
   $("#map-grid").classList.toggle("hidden-grid", !map);
+  renderFog(map);
   const tokens = map ? state.data.tokens.filter(token => token.mapId === map.id) : [];
   $("#token-layer").innerHTML = tokens.map(token => `
     <button class="token" type="button" data-token-id="${escapeHtml(token.id)}" aria-label="Mover ${escapeHtml(token.name)}" style="left:${token.x}%;top:${token.y}%;--token-color:${escapeHtml(token.color)}">
       <span class="token-orb">${escapeHtml(initials(token.name))}</span><span class="token-name">${escapeHtml(token.name)}</span>
     </button>`).join("");
   $("#token-layer").querySelectorAll(".token").forEach(bindTokenDrag);
+}
+
+function renderFog(map) {
+  const layer = $("#fog-layer");
+  layer.classList.toggle("active", state.fogEditing && Boolean(map));
+  layer.classList.toggle("fog-enabled", Boolean(map?.fogEnabled));
+  layer.style.setProperty("--fog-columns", FOG_COLUMNS);
+  layer.style.setProperty("--fog-rows", FOG_ROWS);
+  layer.innerHTML = map?.fogEnabled
+    ? Array.from({ length: FOG_COLUMNS * FOG_ROWS }, (_, index) =>
+      `<span class="fog-cell ${map.revealedCells?.includes(index) ? "revealed" : ""}" data-cell="${index}"></span>`
+    ).join("")
+    : "";
+  const fogButton = $("#fog-button");
+  const visibilityButton = $("#fog-visibility-button");
+  $("#select-tool").classList.toggle("selected", !state.fogEditing);
+  $("#select-tool").setAttribute("aria-pressed", String(!state.fogEditing));
+  fogButton.classList.toggle("selected", state.fogEditing);
+  fogButton.setAttribute("aria-pressed", String(state.fogEditing));
+  fogButton.setAttribute("aria-label", state.fogEditing ? "Desativar edição da neblina" : "Editar neblina de guerra");
+  visibilityButton.classList.toggle("selected", Boolean(map?.fogEnabled));
+  visibilityButton.setAttribute("aria-pressed", String(Boolean(map?.fogEnabled)));
+  visibilityButton.setAttribute("aria-label", map?.fogEnabled ? "Desativar neblina de guerra" : "Ativar neblina de guerra");
+  $("#fog-hint").hidden = !state.fogEditing;
 }
 
 function renderPlayers() {
@@ -142,10 +184,112 @@ function renderSheets() {
 }
 
 function renderInitiative() {
+  const initiative = state.data?.initiative || [];
+  const currentTurn = state.data?.initiativeTurn || 0;
   const container = $("#initiative-list");
-  container.innerHTML = state.initiative.length ? state.initiative.map((entry, index) => `
-    <div class="initiative-entry"><strong>${entry.roll}</strong><span>${escapeHtml(entry.name)}</span><span>${index === 0 ? "Turno atual" : `#${index + 1}`}</span></div>`).join("") :
+  container.innerHTML = initiative.length ? initiative.map((entry, index) => `
+    <div class="initiative-entry ${index === currentTurn ? "current-turn" : ""}"><strong>${entry.roll}</strong><span>${escapeHtml(entry.name)}</span><span>${index === currentTurn ? `Rodada ${state.data.initiativeRound}` : `#${index + 1}`}</span></div>`).join("") :
     '<div class="initiative-empty"><span>☼</span><p>Role iniciativa para<br>começar o combate.</p></div>';
+  $("#next-turn-button").hidden = initiative.length < 1;
+}
+
+function renderChat() {
+  const messages = state.data?.messages || [];
+  $("#chat-messages").innerHTML = messages.map(message => message.kind === "roll"
+    ? `<article class="chat-message roll-message"><div class="chat-message-meta"><strong>${escapeHtml(message.author)}</strong><time>${formatTime(message.createdAt)}</time></div><p>rolou ${message.rolls.length}d${message.sides}</p><div class="chat-roll-result"><span>${message.rolls.join(" · ")}</span><strong>${message.total}</strong></div></article>`
+    : `<article class="chat-message"><div class="chat-message-meta"><strong>${escapeHtml(message.author)}</strong><time>${formatTime(message.createdAt)}</time></div><p>${escapeHtml(message.content)}</p></article>`
+  ).join("");
+  const chat = $("#chat-messages");
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function formatTime(value) {
+  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function receiveMessage(message) {
+  const messages = state.data.messages;
+  if (messages.some(existing => existing.id === message.id)) return;
+  messages.push(message);
+  if (messages.length > 100) messages.shift();
+  renderChat();
+}
+
+async function connectToSession() {
+  const connection = new HubConnectionBuilder()
+    .withUrl("/hubs/session")
+    .withAutomaticReconnect()
+    .build();
+
+  connection.on("ReceiveMessage", receiveMessage);
+  connection.on("TableChanged", loadState);
+  connection.onreconnecting(() => setConnectionStatus("Reconectando"));
+  connection.onreconnected(() => setConnectionStatus("Conectado"));
+  connection.onclose(() => setConnectionStatus("Desconectado"));
+
+  try {
+    await connection.start();
+    state.connection = connection;
+    setConnectionStatus("Conectado");
+  } catch {
+    setConnectionStatus("Offline");
+  }
+}
+
+function setConnectionStatus(status) {
+  const element = $("#connection-state");
+  element.querySelector("span").className = status === "Conectado" ? "connected" : "";
+  element.lastChild.textContent = status;
+}
+
+async function sendChat(event) {
+  event.preventDefault();
+  const author = $("#player-name").value.trim();
+  const content = $("#chat-input").value.trim();
+  if (!author || !content) return;
+  localStorage.setItem("brasa-player-name", author);
+  try {
+    const message = await api("/chat", { method: "POST", body: JSON.stringify({ author, content }) });
+    receiveMessage(message);
+    $("#chat-input").value = "";
+    $("#chat-input").focus();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function fogCellAt(event) {
+  const bounds = $("#board").getBoundingClientRect();
+  const column = Math.max(0, Math.min(FOG_COLUMNS - 1, Math.floor((event.clientX - bounds.left) / bounds.width * FOG_COLUMNS)));
+  const row = Math.max(0, Math.min(FOG_ROWS - 1, Math.floor((event.clientY - bounds.top) / bounds.height * FOG_ROWS)));
+  return row * FOG_COLUMNS + column;
+}
+
+function paintFog(event) {
+  if (!state.fogEditing || !state.fogPointerDown) return;
+  const map = activeMap();
+  if (!map) return;
+  const cell = fogCellAt(event);
+  const revealed = new Set(map.revealedCells || []);
+  if (state.fogReveal) revealed.add(cell);
+  else revealed.delete(cell);
+  map.revealedCells = [...revealed];
+  $("#fog-layer").querySelector(`[data-cell="${cell}"]`)?.classList.toggle("revealed", state.fogReveal);
+}
+
+async function saveFog() {
+  const map = activeMap();
+  if (!map) return;
+  try {
+    const updatedMap = await api(`/maps/${map.id}/fog`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled: map.fogEnabled, revealedCells: map.revealedCells || [] })
+    });
+    Object.assign(map, updatedMap);
+  } catch (error) {
+    notify(error.message);
+    await loadState();
+  }
 }
 
 function setView(view) {
@@ -303,19 +447,52 @@ async function addToken() {
 }
 
 async function rollDice(sides = state.sides, count = 1) {
+  if (!Number.isInteger(count) || count < 1 || count > 20) {
+    return notify("Escolha entre 1 e 20 dados.");
+  }
+
   const button = $("#roll-button");
   button.disabled = true;
+  const dialog = $("#dice-dialog");
+  const modifier = Math.trunc(Math.max(-100, Math.min(100, Number($("#dice-modifier").value) || 0)));
+  if (!dialog.open) dialog.showModal();
+  $("#dice-stage-status").textContent = "Os dados estão rolando...";
   try {
-    const result = await api("/dice/roll", { method: "POST", body: JSON.stringify({ sides, count }) });
-    $("#roll-total").textContent = result.total;
-    $("#roll-detail").textContent = `${result.rolls.join(" + ")}${result.modifier ? ` ${result.modifier > 0 ? "+" : "−"} ${Math.abs(result.modifier)}` : ""} · d${result.sides}`;
+    if (!state.diceBox) {
+      const { default: DiceBox } = await import("@3d-dice/dice-box");
+      state.diceBox = new DiceBox({
+        container: "#dice-stage",
+        assetPath: "/assets/dice-box/",
+        theme: "default",
+        themeColor: "#d3a875",
+        offscreen: false,
+        gravity: 1.5
+      });
+      await state.diceBox.init();
+    } else {
+      state.diceBox.show();
+    }
+
+    const notation = `${count}d${sides}${modifier ? `${modifier > 0 ? "+" : ""}${modifier}` : ""}`;
+    const diceResults = await state.diceBox.roll(notation);
+    const rolls = diceResults.map(die => Number(die.value));
+    const author = $("#player-name").value.trim() || "Mestre da mesa";
+    const message = await api("/dice/record", {
+      method: "POST",
+      body: JSON.stringify({ author, sides, rolls, modifier })
+    });
+    receiveMessage(message);
+    $("#roll-total").textContent = message.total;
+    $("#roll-detail").textContent = `${message.rolls.join(" + ")}${modifier ? ` ${modifier > 0 ? "+" : "−"} ${Math.abs(modifier)}` : ""} · d${message.sides}`;
     const resultBox = $("#roll-result");
     resultBox.classList.remove("critical", "failure", "animate");
-    if (result.sides === 20 && count === 1 && result.total === 20) resultBox.classList.add("critical");
-    if (result.sides === 20 && count === 1 && result.total === 1) resultBox.classList.add("failure");
+    if (message.sides === 20 && count === 1 && message.total === 20) resultBox.classList.add("critical");
+    if (message.sides === 20 && count === 1 && message.total === 1) resultBox.classList.add("failure");
     void resultBox.offsetWidth;
     resultBox.classList.add("animate");
+    $("#dice-stage-status").textContent = `${message.author} rolou ${message.rolls.join(" + ")} e tirou ${message.total}.`;
   } catch (error) {
+    $("#dice-stage-status").textContent = "A animação não foi concluída.";
     notify(error.message);
   } finally {
     button.disabled = false;
@@ -337,19 +514,69 @@ async function editCampaignName() {
 async function rollInitiative() {
   if (!state.data.characters.length) return notify("Crie um personagem antes de rolar iniciativa.");
   try {
-    state.initiative = await Promise.all(state.data.characters.map(async character => {
-      const result = await api("/dice/roll", { method: "POST", body: JSON.stringify({ sides: 20 }) });
-      return {
-        name: character.name,
-        roll: result.total + Math.floor(((character.attributes?.Destreza ?? 10) - 10) / 2)
-      };
-    }));
-    state.initiative.sort((first, second) => second.roll - first.roll);
-    renderInitiative();
+    await api("/initiative", { method: "POST" });
+    await loadState();
     notify("Iniciativa rolada para todos os personagens.");
   } catch (error) {
     notify(error.message);
   }
+}
+
+async function advanceTurn() {
+  if (!state.data?.initiative?.length) return;
+  try {
+    await api("/initiative/next", { method: "PUT" });
+    await loadState();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+async function toggleFog() {
+  const map = activeMap();
+  if (!map) return notify("Importe um mapa antes de editar a neblina.");
+  state.fogEditing = !state.fogEditing;
+  if (state.fogEditing && !map.fogEnabled) {
+    map.fogEnabled = true;
+    map.revealedCells = [];
+    try {
+      const updatedMap = await api(`/maps/${map.id}/fog`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: true, revealedCells: [] })
+      });
+      Object.assign(map, updatedMap);
+    } catch (error) {
+      state.fogEditing = false;
+      map.fogEnabled = false;
+      notify(error.message);
+    }
+  }
+  renderBoard();
+}
+
+async function toggleFogVisibility() {
+  const map = activeMap();
+  if (!map) return notify("Importe um mapa antes de ativar a neblina.");
+  try {
+    const updatedMap = await api(`/maps/${map.id}/fog`, {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: !map.fogEnabled,
+        revealedCells: map.revealedCells || []
+      })
+    });
+    Object.assign(map, updatedMap);
+    if (!map.fogEnabled) state.fogEditing = false;
+    renderBoard();
+  } catch (error) {
+    notify(error.message);
+  }
+}
+
+function finishFogStroke() {
+  if (!state.fogPointerDown) return;
+  state.fogPointerDown = false;
+  saveFog();
 }
 
 document.querySelectorAll(".nav-link").forEach(button => button.addEventListener("click", () => setView(button.dataset.view)));
@@ -369,6 +596,10 @@ $("#close-dialog").addEventListener("click", () => $("#character-dialog").close(
 $("#cancel-dialog").addEventListener("click", () => $("#character-dialog").close());
 $("#add-token-button").addEventListener("click", addToken);
 $("#grid-button").addEventListener("click", () => $("#map-grid").classList.toggle("hidden-grid"));
+$("#select-tool").addEventListener("click", () => {
+  state.fogEditing = false;
+  renderBoard();
+});
 $("#zoom-button").addEventListener("click", () => {
   state.zoomed = !state.zoomed;
   $("#map-art").style.transform = state.zoomed ? "scale(1.35)" : "";
@@ -385,10 +616,37 @@ $("#dice-row").addEventListener("click", event => {
 });
 $("#roll-button").addEventListener("click", () => rollDice(state.sides, Number($("#dice-count").value) || 1));
 $("#initiative-button").addEventListener("click", rollInitiative);
+$("#next-turn-button").addEventListener("click", advanceTurn);
+$("#fog-button").addEventListener("click", toggleFog);
+$("#fog-visibility-button").addEventListener("click", toggleFogVisibility);
+$("#fog-layer").addEventListener("pointerdown", event => {
+  if (!state.fogEditing) return;
+  event.preventDefault();
+  state.fogPointerDown = true;
+  state.fogReveal = !event.shiftKey;
+  $("#fog-layer").setPointerCapture(event.pointerId);
+  paintFog(event);
+});
+$("#fog-layer").addEventListener("pointermove", paintFog);
+$("#fog-layer").addEventListener("pointerup", finishFogStroke);
+$("#fog-layer").addEventListener("pointercancel", finishFogStroke);
+$("#chat-form").addEventListener("submit", sendChat);
+$("#player-name").value = localStorage.getItem("brasa-player-name") || "";
+$("#player-name").addEventListener("change", event => localStorage.setItem("brasa-player-name", event.target.value.trim()));
+$("#close-dice-dialog").addEventListener("click", () => $("#dice-dialog").close());
+$("#dice-stage-close").addEventListener("click", () => $("#dice-dialog").close());
+$("#dice-dialog").addEventListener("close", () => state.diceBox?.hide());
 $("#sheet-import").addEventListener("change", event => {
   importSheet(event.target.files[0]);
   event.target.value = "";
 });
-$("#invite-button").addEventListener("click", () => notify("Os convites estarão disponíveis em uma próxima etapa."));
+$("#invite-button").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(window.location.href);
+    notify("Link da mesa copiado. Compartilhe com seu grupo.");
+  } catch {
+    notify("Copie o endereço do navegador para convidar seu grupo.");
+  }
+});
 
-loadState();
+loadState().then(() => connectToSession());

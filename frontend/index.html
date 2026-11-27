@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
+  <script type="module" src="/app.js"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -54,7 +54,7 @@
         <div class="table-layout">
           <div class="board-column">
             <div class="board-toolbar">
-              <div class="tool-group" aria-label="Ferramentas da mesa"><button class="tool-button selected" type="button" aria-label="Selecionar token" title="Selecionar">↖</button><button class="tool-button" id="grid-button" type="button" aria-label="Alternar grade" title="Alternar grade">▦</button></div>
+              <div class="tool-group" aria-label="Ferramentas da mesa"><button class="tool-button selected" id="select-tool" type="button" aria-label="Selecionar token" aria-pressed="true" title="Selecionar">↖</button><button class="tool-button" id="grid-button" type="button" aria-label="Alternar grade" title="Alternar grade">▦</button><button class="tool-button" id="fog-button" type="button" aria-label="Ativar edição da neblina" aria-pressed="false" title="Editar neblina">◒</button><button class="tool-button" id="fog-visibility-button" type="button" aria-label="Ativar neblina de guerra" aria-pressed="false" title="Alternar neblina">◐</button></div>
               <span class="board-hint">Arraste os tokens para mover</span>
               <button class="zoom-button" id="zoom-button" type="button" aria-label="Alternar zoom"><span>⊕</span> 100%</button>
             </div>
@@ -62,17 +62,19 @@
               <div class="map-art" id="map-art"></div>
               <div class="map-grid" id="map-grid"></div>
               <div class="map-atmosphere"></div>
+              <div class="fog-layer" id="fog-layer" aria-label="Neblina de guerra"></div>
               <div class="board-compass"><span>N</span><span>✦</span></div>
               <div class="board-coordinates" aria-hidden="true">ARVENDEL · 04 / 12</div>
               <div class="token-layer" id="token-layer"></div>
               <div class="board-empty" id="board-empty" hidden><span>✧</span><strong>Um novo cenário começa aqui</strong><p>Importe um mapa para dar vida à aventura.</p><button class="primary-button" id="empty-upload-button" type="button">Importar mapa</button></div>
             </div>
+            <p class="fog-hint" id="fog-hint" hidden>Clique e arraste para revelar áreas · Shift + clique para ocultar</p>
             <section class="dice-panel" aria-label="Rolagem de dados">
               <div class="dice-panel-title"><span class="dice-sparkle">✳</span><div><strong>Rolagem rápida</strong><small>O destino está nas suas mãos</small></div></div>
               <div class="dice-row" id="dice-row" aria-label="Escolha um dado">
                 <button class="die active-die" data-sides="20" type="button">d20</button><button class="die" data-sides="12" type="button">d12</button><button class="die" data-sides="10" type="button">d10</button><button class="die" data-sides="8" type="button">d8</button><button class="die" data-sides="6" type="button">d6</button><button class="die" data-sides="4" type="button">d4</button><button class="die" data-sides="100" type="button">d100</button>
               </div>
-              <div class="roll-controls"><label class="sr-only" for="dice-count">Quantidade de dados</label><input id="dice-count" type="number" min="1" max="20" value="1"><span class="dice-times">×</span><button id="roll-button" class="roll-button" type="button"><span>✳</span> Rolar d20</button></div>
+              <div class="roll-controls"><label class="sr-only" for="dice-count">Quantidade de dados</label><input id="dice-count" type="number" min="1" max="20" value="1"><span class="dice-times">×</span><button id="roll-button" class="roll-button" type="button"><span>✳</span> Rolar d20</button><label class="sr-only" for="dice-modifier">Modificador da rolagem</label><input id="dice-modifier" class="dice-modifier" type="number" min="-100" max="100" value="0" aria-label="Modificador da rolagem"></div>
               <div class="roll-result" id="roll-result" aria-live="polite"><span>Última rolagem</span><strong id="roll-total">—</strong><small id="roll-detail">Aguardando os dados</small></div>
             </section>
           </div>
@@ -84,7 +86,18 @@
             <div class="panel-divider"></div>
             <div class="panel-heading initiative-heading"><div><span class="eyebrow">CENA ATUAL</span><h2>Iniciativa</h2></div><button class="icon-button" id="initiative-button" type="button" aria-label="Rolar iniciativa" title="Rolar iniciativa">⚄</button></div>
             <div class="initiative-list" id="initiative-list"><div class="initiative-empty"><span>☼</span><p>Role iniciativa para<br>começar o combate.</p></div></div>
+            <button class="next-turn-button" id="next-turn-button" type="button" hidden>Avançar turno <span>→</span></button>
             <div class="session-note"><span class="note-icon">✦</span><p><strong>Dica do mestre</strong>Arraste os tokens no mapa para posicionar seu grupo.</p></div>
+            <div class="panel-divider chat-divider"></div>
+            <div class="panel-heading chat-heading"><div><span class="eyebrow">MESA AO VIVO</span><h2>Chat da sessão</h2></div><span class="connection-state" id="connection-state"><span></span>Conectando</span></div>
+            <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+            <form class="chat-form" id="chat-form">
+              <label class="sr-only" for="player-name">Seu nome</label>
+              <input id="player-name" maxlength="24" placeholder="Seu nome" autocomplete="nickname" required>
+              <label class="sr-only" for="chat-input">Mensagem para a mesa</label>
+              <input id="chat-input" maxlength="500" placeholder="Escreva para a mesa..." autocomplete="off" required>
+              <button class="chat-send" type="submit" aria-label="Enviar mensagem">↑</button>
+            </form>
           </aside>
         </div>
       </section>
@@ -109,6 +122,12 @@
   </dialog>
 
   <input class="sr-only" id="map-import" type="file" accept="image/*">
+  <dialog class="dice-dialog" id="dice-dialog" aria-label="Rolagem de dados">
+    <div class="dice-dialog-header"><span class="eyebrow">ROLAGEM DA MESA</span><button class="icon-button" id="close-dice-dialog" type="button" aria-label="Fechar rolagem">×</button></div>
+    <div class="dice-stage" id="dice-stage"></div>
+    <p class="dice-stage-status" id="dice-stage-status" role="status" aria-live="polite">Os dados estão prontos.</p>
+    <button class="dice-stage-close" id="dice-stage-close" type="button">Voltar para a mesa</button>
+  </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

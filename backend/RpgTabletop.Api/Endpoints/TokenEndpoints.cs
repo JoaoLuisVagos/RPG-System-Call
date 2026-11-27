@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.SignalR;
+
 namespace RpgTabletop.Api.Endpoints;
 
 public static class TokenEndpoints
@@ -9,7 +11,10 @@ public static class TokenEndpoints
         return endpoints;
     }
 
-    private static async Task<IResult> CreateTokenAsync(CreateTokenRequest request, GameStore store)
+    private static async Task<IResult> CreateTokenAsync(
+        CreateTokenRequest request,
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         var state = await store.ReadAsync();
         var character = state.Characters.FirstOrDefault(item => item.Id == request.CharacterId);
@@ -28,13 +33,15 @@ public static class TokenEndpoints
             Y = 50
         };
         await store.UpdateAsync(current => current.Tokens.Add(token));
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.Created($"/api/tokens/{token.Id}", token);
     }
 
     private static async Task<IResult> MoveTokenAsync(
         string id,
         MoveTokenRequest request,
-        GameStore store)
+        GameStore store,
+        IHubContext<SessionHub> hub)
     {
         if (!double.IsFinite(request.X) || !double.IsFinite(request.Y))
         {
@@ -59,6 +66,7 @@ public static class TokenEndpoints
             return Results.NotFound();
         }
 
+        await RealtimeEvents.PublishTableChangedAsync(hub);
         return Results.Ok(movedToken);
     }
 
