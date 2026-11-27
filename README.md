@@ -27,6 +27,21 @@ Uma mesa virtual para organizar campanhas, movimentar tokens, importar mapas, ma
 
 A primeira execução cria uma campanha de demonstração. O estado fica em `backend/RpgTabletop.Api/data/campaign.json`.
 
+## Organização
+
+```text
+backend/RpgTabletop.Api/
+  Endpoints/    Rotas separadas por campanhas, mapas, personagens, tokens e dados
+  Validation/   Validações das fichas de personagem
+  GameStore.cs  Persistência local da campanha
+  Models.cs     Modelos da API
+  Program.cs    Configuração e inicialização
+frontend/
+  app.js
+  index.html
+  styles.css
+```
+
 ## O que já funciona
 
 - Mesa responsiva com mapa inicial, grade alternável e tokens arrastáveis.
